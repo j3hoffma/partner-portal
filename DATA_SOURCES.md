@@ -1,43 +1,114 @@
-# DATA SOURCES
+# Data Sources & Queries
+
+> All data was pulled from Square's Snowflake data warehouse on March 3, 2026.
 
 ## Partner Profile
 
-- **Partner ID:** Unique identifier for each partner.
-- **Partner Name:** Name of the partner.
-- **Contact Info:** Email and phone contact information.
+```sql
+SELECT partner_name, partner_type, team, partner_manager, launched_countries
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.DIM_PARTNER 
+WHERE partner_type IN ('Channel Partner')
+```
 
-## Merchant Portfolio
+## Merchant Portfolio (Top 25 by GPV)
 
 ```sql
 SELECT 
-  MerchantID,
-  MerchantName,
-  MerchantStatus,
-  MERCHANT_ACTIVATION_DATE 
-FROM 
-  Merchants
-WHERE 
-  PartnerID = :PartnerID;
+  r.MERCHANT_TOKEN,
+  m.BUSINESS_NAME,
+  m.MERCHANT_RECEIPT_STATE as STATE,
+  m.MERCHANT_RECEIPT_CITY as CITY,
+  m.MERCHANT_BUSINESS_CATEGORY,
+  SUM(r.GPV_NET_VAR_USD) as total_gpv_usd,
+  SUM(r.REVENUE_NET_VAR_USD) as total_revenue_usd,
+  SUM(r.TRANSACTION_COUNT) as total_transactions,
+  MIN(r.REPORT_DATE) as first_transaction_date,
+  MAX(r.REPORT_DATE) as last_transaction_date,
+  COUNT(DISTINCT r.REPORT_DATE) as active_days
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.PARTNER_REFERRAL_DAILY_REVENUE_SUMMARY r
+LEFT JOIN APP_DAP.DAP.DIM_MERCHANT m ON r.MERCHANT_TOKEN = m.MERCHANT_TOKEN
+WHERE r.PARTNER_ACCOUNT_ID = '001Kb00001GRUDyIAP'
+  AND r.REPORT_DATE >= '2025-01-01'
+GROUP BY r.MERCHANT_TOKEN, m.BUSINESS_NAME, m.MERCHANT_RECEIPT_STATE, 
+         m.MERCHANT_RECEIPT_CITY, m.MERCHANT_BUSINESS_CATEGORY
+ORDER BY total_gpv_usd DESC
+LIMIT 25
 ```
 
 ## Monthly Payout History
 
-- **Payout ID:** Unique identifier for each payout.
-- **Date:** Date of payout.
-- **Amount:** Total amount paid to the partner.
+```sql
+SELECT 
+  p.PAYOUT_MONTH,
+  p.MERCHANT_COUNT,
+  p.TOTAL_AMOUNT_DUE_VAR_USD,
+  p.GPV_NET_VAR_USD,
+  p.PAYMENT_COUNT,
+  p.TOTAL_REFERRALS_TO_DATE,
+  p.NEW_REFERRALS_THIS_MONTH,
+  p.ACTIVATION_AMOUNT_DUE_VAR_USD,
+  p.PRODUCT_ADOPTION_AMOUNT_DUE_VAR_USD,
+  p.SO_SAAS_AMOUNT_DUE_VAR_USD,
+  p.ECOMMERCE_API_AMOUNT_DUE_VAR_USD,
+  p.ON_DEMAND_DELIVERY_AMOUNT_DUE_VAR_USD
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.PARTNER_PAYOUT_PRM_REPORTING p
+WHERE p.PARTNER_ACCOUNT_ID = '001Kb00001GRUDyIAP'
+ORDER BY p.PAYOUT_MONTH DESC
+LIMIT 12
+```
 
 ## Referral Funnel Summary
 
-- **Total Referrals:** Total number of referrals made by the partner.
-- **Conversion Rate:** Ratio of converted referrals to total referrals.
+```sql
+SELECT 
+  COUNT(*) as total_referrals,
+  SUM(CASE WHEN MERCHANT_ACTIVATION_DATE != '9999-09-09' THEN 1 ELSE 0 END) as activated,
+  SUM(CASE WHEN MERCHANT_ACTIVATION_DATE = '9999-09-09' THEN 1 ELSE 0 END) as pending_activation,
+  SUM(DEACTIVATED) as deactivated,
+  SUM(SALES_TOUCHED) as sales_touched,
+  SUM(SALES_WON) as sales_won
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.REFERRAL_UNITS_ALL
+WHERE ACCOUNT_ID = '001Kb00001GRUDyIAP'
+```
 
-## Referral Detail
+**Results:** 319 total | 203 activated | 116 pending | 33 deactivated | 75 sales-touched | 24 sales-won
 
-- **Referral ID:** Unique identifier for each referral.
-- **Referral Date:** Date the referral was made.
-- **Status:** Current status of the referral.
+## Referral Detail (Recent)
+
+```sql
+SELECT 
+  r.MERCHANT_TOKEN,
+  r.PARTNER as PARTNER_NAME,
+  r.SOURCE,
+  r.MERCHANT_ACCOUNT_CREATION_DATE,
+  r.MERCHANT_ACTIVATION_DATE,
+  r.DAYS_REFERRAL_TO_ACTIVATION,
+  r.DEACTIVATED,
+  r.SALES_TOUCHED,
+  r.SALES_WON
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.REFERRAL_UNITS_ALL r
+WHERE r.ACCOUNT_ID = '001Kb00001GRUDyIAP'
+ORDER BY r.CREATED_AT DESC
+LIMIT 30
+```
 
 ## Aggregate Partner Summary
 
-- **Total Earnings:** Total earnings for the partner over a specified period.
-- **Referral Count:** Count of successful referrals.
+```sql
+SELECT 
+  r.PARTNER_NAME,
+  r.PARTNER_ACCOUNT_ID,
+  r.COUNTRY_CODE,
+  COUNT(DISTINCT r.MERCHANT_TOKEN) as merchant_count,
+  SUM(r.GPV_NET_VAR_USD) as total_gpv_usd,
+  SUM(r.REVENUE_NET_VAR_USD) as total_revenue_usd,
+  SUM(r.TRANSACTION_COUNT) as total_transactions
+FROM APP_PARTNERSHIPS.APP_PARTNERSHIPS.PARTNER_REFERRAL_DAILY_REVENUE_SUMMARY r
+WHERE r.REPORT_DATE >= '2025-01-01'
+  AND r.COUNTRY_CODE = 'US'
+  AND LOWER(r.PARTNER_NAME) LIKE '%local%pos%'
+GROUP BY r.PARTNER_NAME, r.PARTNER_ACCOUNT_ID, r.COUNTRY_CODE
+ORDER BY total_gpv_usd DESC
+```
+
+**Results:** 137 merchants | $2.66M GPV | $92.7K revenue | 43,447 transactions
