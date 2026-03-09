@@ -551,34 +551,21 @@ function aiInsight(m) {
 
 // ─── LIVE DATA FETCH ────────────────────────────────────────────────
 async function loadLiveData() {
-  // Load the default partner from embedded data
   const data = PARTNER_DATA[currentPartnerId];
-  if (data) {
-    data.merchants.forEach(m => { if (!m.STATUS) m.STATUS = getStatus(m); });
-    renderDashboard(data.summary, data.merchants, data.payouts, data.funnel);
-    renderMerchants(data.summary, data.merchants);
-    renderCompensation(data.payouts);
-    renderPipeline(data.funnel, data.merchants);
-    renderAIChat(data.summary, data.merchants, data.payouts, data.funnel);
-    
-    // Update sidebar
-    const name = data.summary.PARTNER_NAME;
-    document.getElementById('partner-name').textContent = name;
-    document.getElementById('partner-avatar').textContent = name.split(' ').map(w => w[0]).join('').substring(0,2).toUpperCase();
-    
-    console.log('✅ Loaded:', name, '-', data.summary.MERCHANT_COUNT, 'merchants');
-    return;
-  }
-  try {
-    console.warn('⚠️ API not available — using embedded Snowflake data (refreshed: ' + EMBEDDED_DATA.refreshed + ')');
-    const { summary, merchants, payouts, funnel } = EMBEDDED_DATA;
-    merchants.forEach(m => { if (!m.STATUS) m.STATUS = getStatus(m); });
-    renderDashboard(summary, merchants, payouts, funnel);
-    renderMerchants(summary, merchants);
-    renderCompensation(payouts);
-    renderPipeline(funnel, merchants);
-    renderAIChat(summary, merchants, payouts, funnel);
-  }
+  if (!data) { console.error('No data for partner:', currentPartnerId); return; }
+  
+  data.merchants.forEach(m => { if (!m.STATUS) m.STATUS = getStatus(m); });
+  renderDashboard(data.summary, data.merchants, data.payouts, data.funnel);
+  renderMerchants(data.summary, data.merchants);
+  renderCompensation(data.payouts);
+  renderPipeline(data.funnel, data.merchants);
+  renderAIChat(data.summary, data.merchants, data.payouts, data.funnel);
+  
+  const name = data.summary.PARTNER_NAME;
+  document.getElementById('partner-name').textContent = name;
+  document.getElementById('partner-avatar').textContent = name.split(' ').map(w => w[0]).join('').substring(0,2).toUpperCase();
+  
+  console.log('✅ Loaded:', name, '-', data.summary.MERCHANT_COUNT, 'merchants');
 }
 
 // ─── RENDER: DASHBOARD ─────────────────────────────────────────────
