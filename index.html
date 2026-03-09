@@ -452,7 +452,231 @@ td { padding:12px 8px; border-bottom:1px solid #F0F0ED; }
 </div><!-- end main -->
 
 <script>
-// Navigation
+// ─── CONFIG ─────────────────────────────────────────────────────────
+const API_BASE = 'http://localhost:3000/api/partner';
+
+// ─── HELPERS ────────────────────────────────────────────────────────
+function fmt(v) {
+  if (v >= 1e6) return '$' + (v/1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return '$' + Math.round(v/1e3).toLocaleString() + 'K';
+  return '$' + Number(v).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtInt(v) { return Number(v).toLocaleString(); }
+function pct(a,b) { return b > 0 ? ((a/b)*100).toFixed(1) : '0'; }
+
+function getStatus(m) {
+  const now = new Date();
+  const last = new Date(m.LAST_TRANSACTION_DATE);
+  const first = new Date(m.FIRST_TRANSACTION_DATE);
+  const daysLast = Math.floor((now - last) / 864e5);
+  const daysFirst = Math.floor((now - first) / 864e5);
+  if (daysLast > 60) return 'inactive';
+  if (daysLast > 14) return 'at-risk';
+  if (daysFirst < 90) return 'new';
+  return 'active';
+}
+
+function statusClass(s) {
+  if (s === 'active') return 'status-active';
+  if (s === 'at-risk') return 'status-risk';
+  if (s === 'new') return 'status-new';
+  return 'status-inactive';
+}
+
+function statusLabel(s) {
+  if (s === 'at-risk') return 'At Risk';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function aiInsight(m) {
+  if (m.STATUS === 'inactive') return '⚠️ Inactive — check in with merchant';
+  if (m.STATUS === 'new') return '🆕 Recently activated — needs onboarding';
+  if (m.STATUS === 'at-risk') return '⚠️ Activity declining — reach out soon';
+  if (m.TOTAL_GPV_USD > 200000) return '🔥 Top performer — ' + m.ACTIVE_DAYS + ' active days';
+  if (m.TOTAL_TRANSACTIONS > 5000) return '📊 High volume — loyalty candidate';
+  const avg = m.TOTAL_TRANSACTIONS > 0 ? m.TOTAL_GPV_USD / m.TOTAL_TRANSACTIONS : 0;
+  if (avg > 100) return '💎 $' + Math.round(avg) + ' avg ticket — high-value';
+  return '✅ Steady growth';
+}
+
+// ─── LIVE DATA FETCH ────────────────────────────────────────────────
+async function loadLiveData() {
+  try {
+    const [summaryRes, merchantsRes, payoutsRes, funnelRes] = await Promise.all([
+      fetch(API_BASE + '/summary'),
+      fetch(API_BASE + '/merchants'),
+      fetch(API_BASE + '/payouts'),
+      fetch(API_BASE + '/funnel'),
+    ]);
+    const summary = await summaryRes.json();
+    const merchants = await merchantsRes.json();
+    const payouts = await payoutsRes.json();
+    const funnel = await funnelRes.json();
+
+    // Add status to merchants
+    merchants.forEach(m => { if (!m.STATUS) m.STATUS = getStatus(m); });
+
+    renderDashboard(summary, merchants, payouts, funnel);
+    renderMerchants(summary, merchants);
+    renderCompensation(payouts);
+    renderPipeline(funnel, merchants);
+    renderAIChat(summary, merchants, payouts, funnel);
+
+    console.log('✅ Live data loaded:', summary.MERCHANT_COUNT, 'merchants');
+  } catch (err) {
+    console.warn('⚠️ Could not fetch live data from ' + API_BASE, err.message);
+    console.log('Falling back to hardcoded data in HTML');
+  }
+}
+
+// ─── RENDER: DASHBOARD ─────────────────────────────────────────────
+function renderDashboard(summary, merchants, payouts, funnel) {
+  const latest = payouts[0] || {};
+  const prev = payouts[1] || {};
+  const payoutChange = prev.TOTAL_AMOUNT_DUE_VAR_USD > 0
+    ? Math.round(((latest.TOTAL_AMOUNT_DUE_VAR_USD - prev.TOTAL_AMOUNT_DUE_VAR_USD) / prev.TOTAL_AMOUNT_DUE_VAR_USD) * 100)
+    : 0;
+  const top5 = [...merchants].sort((a,b) => b.TOTAL_GPV_USD - a.TOTAL_GPV_USD).slice(0,5);
+  const pending = funnel.PENDING_ACTIVATION || 0;
+
+  // Briefing
+  const briefing = document.querySelector('.briefing ul');
+  if (briefing) {
+    briefing.innerHTML = 
+      '<li>📈 Your portfolio has grown to <strong>' + summary.MERCHANT_COUNT + ' merchants</strong> with <strong>' + fmt(summary.TOTAL_GPV_USD) + ' total GPV</strong></li>' +
+      '<li>💰 Latest payout was <strong>' + fmt(latest.TOTAL_AMOUNT_DUE_VAR_USD || 0) + '</strong>' + (payoutChange > 0 ? ' — up ' + payoutChange + '% from previous month' : '') + '</li>' +
+      '<li>🚀 You added <strong>' + (latest.NEW_REFERRALS_THIS_MONTH || 0) + ' new referrals</strong> last month — ' + funnel.TOTAL_REFERRALS + ' total to date</li>' +
+      (pending > 0 ? '<li>⚠️ <strong>' + pending + ' referrals</strong> are still pending activation — there\'s significant upside to capture</li>' : '');
+  }
+
+  // Metric cards
+  const cards = document.querySelectorAll('#dashboard .metric-card');
+  if (cards.length >= 4) {
+    cards[0].innerHTML = '<div class="label">Active Merchants</div><div class="value">' + summary.MERCHANT_COUNT + '</div><div class="change">↑ ' + (latest.MERCHANT_COUNT || 0) + ' active in ' + (latest.PAYOUT_MONTH || '').slice(5,7) + '</div>';
+    cards[1].innerHTML = '<div class="label">YTD GPV</div><div class="value">' + fmt(summary.TOTAL_GPV_USD) + '</div><div class="change">↑ ' + fmt(latest.GPV_NET_VAR_USD || 0) + ' last month</div>';
+    cards[2].innerHTML = '<div class="label">Total Referrals</div><div class="value">' + funnel.TOTAL_REFERRALS + '</div><div class="change">' + funnel.ACTIVATED + ' activated · ' + pending + ' pending</div>';
+    cards[3].innerHTML = '<div class="label">Latest Payout</div><div class="value">' + fmt(latest.TOTAL_AMOUNT_DUE_VAR_USD || 0) + '</div><div class="change">' + (payoutChange > 0 ? '↑ ' + payoutChange + '% vs prev month' : '') + '</div>';
+  }
+
+  // Top merchants
+  const topCard = document.querySelector('#dashboard .two-col .card:first-child');
+  if (topCard) {
+    topCard.innerHTML = '<h3>📋 Top Performing Merchants</h3>' + top5.map((m, i) =>
+      '<div class="activity-item"><div class="activity-dot" style="background:' + (i === 0 ? '#000' : '#008060') + '"></div><div><strong>' + m.BUSINESS_NAME + '</strong> — ' + fmt(m.TOTAL_GPV_USD) + ' GPV, ' + fmtInt(m.TOTAL_TRANSACTIONS) + ' txns<span class="activity-time">' + m.MERCHANT_BUSINESS_CATEGORY + ' · ' + m.CITY + ', ' + m.STATE + '</span></div></div>'
+    ).join('');
+  }
+
+  // AI Recommendations
+  const aiCard = document.querySelector('#dashboard .two-col .card:last-child');
+  if (aiCard) {
+    let recs = '<h3>🤖 AI Recommendations</h3>';
+    if (pending > 0) recs += '<div class="task-item"><div class="task-label">Activate ' + pending + ' pending referrals — significant GPV upside</div><button class="task-btn">View Pending</button></div>';
+    if (top5[0]) recs += '<div class="task-item"><div class="task-label">' + top5[0].BUSINESS_NAME + ' is your star — explore expansion</div><button class="task-btn">View Merchant</button></div>';
+    if (funnel.DEACTIVATED > 0) recs += '<div class="task-item"><div class="task-label">' + funnel.DEACTIVATED + ' deactivated merchants — win-back opportunity</div><button class="task-btn">View List</button></div>';
+    recs += '<div class="task-item"><div class="task-label">CO & AZ are strongest markets — double down there</div><button class="task-btn">See Insights</button></div>';
+    aiCard.innerHTML = recs;
+  }
+}
+
+// ─── RENDER: MERCHANTS ──────────────────────────────────────────────
+function renderMerchants(summary, merchants) {
+  const header = document.querySelector('#merchants > p');
+  if (header) header.textContent = summary.MERCHANT_COUNT + ' merchants referred by ' + summary.PARTNER_NAME + ' · ' + fmt(summary.TOTAL_GPV_USD) + ' YTD GPV';
+
+  const tbody = document.querySelector('#merchant-table tbody');
+  if (tbody) {
+    tbody.innerHTML = merchants.map(m =>
+      '<tr>' +
+      '<td style="font-weight:600;">' + m.BUSINESS_NAME + '</td>' +
+      '<td>' + m.MERCHANT_BUSINESS_CATEGORY + '</td>' +
+      '<td>' + m.CITY + ', ' + m.STATE + '</td>' +
+      '<td style="font-weight:600;">' + fmt(m.TOTAL_GPV_USD) + '</td>' +
+      '<td>' + (m.TOTAL_TRANSACTIONS > 0 ? fmtInt(m.TOTAL_TRANSACTIONS) : '—') + '</td>' +
+      '<td><span class="' + statusClass(m.STATUS) + '">' + statusLabel(m.STATUS) + '</span></td>' +
+      '<td style="font-size:12px;color:#4A4A4A;">' + aiInsight(m) + '</td>' +
+      '</tr>'
+    ).join('');
+  }
+}
+
+// ─── RENDER: COMPENSATION ───────────────────────────────────────────
+function renderCompensation(payouts) {
+  const totalEarned = payouts.reduce((s, p) => s + p.TOTAL_AMOUNT_DUE_VAR_USD, 0);
+  const latest = payouts[0] || {};
+  const prev = payouts[1] || {};
+  const change = prev.TOTAL_AMOUNT_DUE_VAR_USD > 0
+    ? Math.round(((latest.TOTAL_AMOUNT_DUE_VAR_USD - prev.TOTAL_AMOUNT_DUE_VAR_USD) / prev.TOTAL_AMOUNT_DUE_VAR_USD) * 100)
+    : 0;
+
+  const cards = document.querySelectorAll('#compensation .metric-card');
+  if (cards.length >= 4) {
+    cards[0].innerHTML = '<div class="label">Total Earned (All Time)</div><div class="value">' + fmt(totalEarned) + '</div><div class="change">Since ' + (payouts[payouts.length-1]?.PAYOUT_MONTH || '').slice(0,7) + '</div>';
+    cards[1].innerHTML = '<div class="label">' + (latest.PAYOUT_MONTH || '').slice(0,7) + ' Payout</div><div class="value">' + fmt(latest.TOTAL_AMOUNT_DUE_VAR_USD || 0) + '</div><div class="change">' + (change > 0 ? '↑ ' + change + '% vs prev' : '') + '</div>';
+    cards[2].innerHTML = '<div class="label">' + (latest.PAYOUT_MONTH || '').slice(0,7) + ' GPV</div><div class="value">' + fmt(latest.GPV_NET_VAR_USD || 0) + '</div><div class="change">' + (latest.MERCHANT_COUNT || 0) + ' active merchants</div>';
+    cards[3].innerHTML = '<div class="label">' + (latest.PAYOUT_MONTH || '').slice(0,7) + ' Referrals</div><div class="value">' + (latest.NEW_REFERRALS_THIS_MONTH || 0) + '</div><div class="change">' + (latest.TOTAL_REFERRALS_TO_DATE || 0) + ' total to date</div>';
+  }
+
+  // Payout table
+  const tbody = document.querySelector('#comp-monthly tbody');
+  if (tbody) {
+    tbody.innerHTML = payouts.map((p, i) => {
+      const month = new Date(p.PAYOUT_MONTH + 'T00:00:00');
+      const monthStr = month.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+      return '<tr' + (i === 0 ? ' style="background:#F6F6F3;font-weight:600;"' : '') + '>' +
+        '<td>' + monthStr + '</td>' +
+        '<td style="' + (i === 0 ? 'color:#008060;font-weight:700;' : 'font-weight:600;') + '">' + fmt(p.TOTAL_AMOUNT_DUE_VAR_USD) + '</td>' +
+        '<td>' + fmt(p.GPV_NET_VAR_USD) + '</td>' +
+        '<td>' + p.MERCHANT_COUNT + '</td>' +
+        '<td>' + fmtInt(p.PAYMENT_COUNT) + '</td>' +
+        '<td>' + p.NEW_REFERRALS_THIS_MONTH + '</td>' +
+        '<td>' + p.TOTAL_REFERRALS_TO_DATE + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  // Growth stats
+  if (payouts.length >= 2) {
+    const first = payouts[payouts.length - 1];
+    const payoutGrowth = first.TOTAL_AMOUNT_DUE_VAR_USD > 0 ? Math.round(((latest.TOTAL_AMOUNT_DUE_VAR_USD / first.TOTAL_AMOUNT_DUE_VAR_USD) - 1) * 100) : 0;
+    const merchantGrowth = first.MERCHANT_COUNT > 0 ? Math.round(((latest.MERCHANT_COUNT / first.MERCHANT_COUNT) - 1) * 100) : 0;
+    const gpvGrowth = first.GPV_NET_VAR_USD > 0 ? Math.round(((latest.GPV_NET_VAR_USD / first.GPV_NET_VAR_USD) - 1) * 100) : 0;
+    const growthCards = document.querySelectorAll('#comp-growth [style*="text-align:center"]');
+    if (growthCards.length >= 3) {
+      growthCards[0].querySelector('[style*="font-size:32px"]').textContent = fmtInt(payoutGrowth) + '%';
+      growthCards[0].querySelector('[style*="font-size:12px"]').textContent = fmt(first.TOTAL_AMOUNT_DUE_VAR_USD) + ' → ' + fmt(latest.TOTAL_AMOUNT_DUE_VAR_USD) + ' in ' + payouts.length + ' months';
+      growthCards[1].querySelector('[style*="font-size:32px"]').textContent = fmtInt(merchantGrowth) + '%';
+      growthCards[1].querySelector('[style*="font-size:12px"]').textContent = first.MERCHANT_COUNT + ' → ' + latest.MERCHANT_COUNT + ' active merchants';
+      growthCards[2].querySelector('[style*="font-size:32px"]').textContent = fmtInt(gpvGrowth) + '%';
+      growthCards[2].querySelector('[style*="font-size:12px"]').textContent = fmt(first.GPV_NET_VAR_USD) + ' → ' + fmt(latest.GPV_NET_VAR_USD) + ' monthly GPV';
+    }
+  }
+}
+
+// ─── RENDER: PIPELINE ───────────────────────────────────────────────
+function renderPipeline(funnel, merchants) {
+  const header = document.querySelector('#pipeline > p');
+  if (header) header.textContent = funnel.TOTAL_REFERRALS + ' total referrals · ' + funnel.ACTIVATED + ' activated · ' + funnel.PENDING_ACTIVATION + ' pending activation · ' + funnel.DEACTIVATED + ' deactivated';
+}
+
+// ─── RENDER: AI CHAT ────────────────────────────────────────────────
+function renderAIChat(summary, merchants, payouts, funnel) {
+  const latest = payouts[0] || {};
+  const top = [...merchants].sort((a,b) => b.TOTAL_GPV_USD - a.TOTAL_GPV_USD).slice(0,5);
+  const pending = funnel.PENDING_ACTIVATION || 0;
+
+  // Update the intro message
+  const introMsg = document.querySelector('#chat-messages > div:first-child [style*="background:#F0F0ED"]');
+  if (introMsg) {
+    introMsg.innerHTML = 'Hi! 👋 I\'m your AI partner assistant with full context on your <strong>' + summary.PARTNER_NAME + '</strong> portfolio. You have <strong>' + summary.MERCHANT_COUNT + ' merchants</strong>, <strong>' + fmt(summary.TOTAL_GPV_USD) + ' YTD GPV</strong>, and <strong>' + funnel.TOTAL_REFERRALS + ' total referrals</strong>. What would you like to know?';
+  }
+
+  // Update AI responses with live data
+  aiResponses['portfolio'] = 'Your ' + summary.PARTNER_NAME + ' portfolio is performing exceptionally well:\n\n📊 ' + summary.MERCHANT_COUNT + ' merchants · ' + fmt(summary.TOTAL_GPV_USD) + ' YTD GPV · ' + fmt(summary.TOTAL_REVENUE_USD) + ' revenue · ' + funnel.TOTAL_REFERRALS + ' referrals\n💰 Latest payout: ' + fmt(latest.TOTAL_AMOUNT_DUE_VAR_USD || 0) + '\n🚀 ' + (latest.NEW_REFERRALS_THIS_MONTH || 0) + ' new referrals last month\n\nTop merchants: ' + top.map(m => m.BUSINESS_NAME + ' (' + fmt(m.TOTAL_GPV_USD) + ')').join(', ');
+  aiResponses['activat'] = 'You have ' + pending + ' referrals pending activation.\n\nIf even 30% activate at your avg GPV, that\'s significant additional monthly GPV and extra monthly payouts.\n\n🎯 Focus on your strongest markets where you have proof points.';
+  aiResponses['churn'] = funnel.DEACTIVATED + ' merchants have deactivated. Win-back campaigns typically recover 15-20%.\n\n💡 Your food & drink merchants have the highest retention. Professional services merchants tend to churn more — consider quarterly check-ins.';
+}
+
+// ─── NAVIGATION ─────────────────────────────────────────────────────
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -489,6 +713,9 @@ function filterMerchants() {
     row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
 }
+
+// ─── LOAD LIVE DATA ON PAGE LOAD ────────────────────────────────────
+loadLiveData();
 
 // AI Chat
 const aiResponses = {
